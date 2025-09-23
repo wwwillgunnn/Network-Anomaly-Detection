@@ -1,2 +1,4 @@
-- EDA file 
+- EDA + PDA (metrics file)
 - introduction of more datasets
+- model optimisation
+- dashboard

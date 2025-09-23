@@ -46,6 +46,8 @@ Timestamp	Src IP	Dst IP	Protocol	Score	Anomaly
 
 ## 📚 Datasets
 - CIC-IDS2017: https://www.kaggle.com/datasets/chethuhn/network-intrusion-dataset
+- CIC-IDS2018: https://www.kaggle.com/datasets/solarmainframe/ids-intrusion-csv
+- CIC-IDS2019: https://www.kaggle.com/datasets/tarundhamor/cicids-2019-dataset
 - UNSW-NB15: https://research.unsw.edu.au/projects/unsw-nb15-dataset
 
 ## Set up
