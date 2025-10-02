@@ -2,6 +2,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+# Format columns to have 1 unified style, e.g. Flow Duration -> Flow_Duration or Total-Packets -> Total_Packets
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = (
@@ -11,8 +12,8 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     )
     return df
 
+# drop "Unnamed" junk + all-NaN columns, dedupe, fill, make finite (change to 0)
 def basic_clean(df: pd.DataFrame) -> pd.DataFrame:
-    # drop "Unnamed" junk + all-NaN columns, dedupe, fill, make finite
     df = df.loc[:, ~df.columns.str.match(r"^Unnamed", case=False)]
     df = df.dropna(axis=1, how="all")
     df = normalize_columns(df)

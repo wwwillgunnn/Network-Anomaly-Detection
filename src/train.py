@@ -9,6 +9,7 @@ from ae_trainer import train_and_score_autoencoder
 from if_trainer import train_and_score_iforest
 from metrics import full_evaluation
 from utils.io import get_dataset_dir
+from lstm_trainer import train_and_score_lstm
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_DIR = os.path.join(PROJECT_ROOT, "models")
@@ -52,6 +53,15 @@ def main():
     )
     print(f"✅ Autoencoder @1%FPR")
     ae_metrics = full_evaluation(y_test, ae_scores, dataset, "autoencoder", MODEL_DIR)
+
+    # after you get X_train, X_test, y_train, y_test, scaler
+    lstm_scores = train_and_score_lstm(
+        X_train, X_test, y_train, y_test,
+        model_dir=MODEL_DIR, dataset=dataset,
+        epochs=12, batch_size=512
+    )
+    print("✅ LSTM @1%FPR")
+    lstm_metrics = full_evaluation(y_test, lstm_scores, dataset, "lstm", MODEL_DIR)
 
     # Todo: save to csv?
 
