@@ -1,25 +1,28 @@
+"""
+This file is an Autoencoder (MLP) for anomaly detection / feature compression.
+
+- Architecture: Encoder → bottleneck (latent_dim) → mirrored decoder.
+- Encoder blocks: Linear → (BatchNorm/LayerNorm/none) → LeakyReLU → (Dropout).
+  Decoder uses Linear → LeakyReLU, with a final Linear to reconstruct inputs.
+- Design intent:
+    * Train on benign data so "normal" patterns reconstruct well; anomalies reconstruct poorly.
+    * Dropout only in the encoder to regularize the learned representation.
+    * Optional normalization ("batch" | "layer" | "none") in encoder for stabler training.
+    * Xavier init for Linear layers; norms start at identity-like settings.
+
+Args:
+    input_dim: number of input features.
+    hidden_dims: tuple of encoder layer sizes (decoder mirrors this order).
+    latent_dim: size of the bottleneck (compression level).
+    dropout: dropout probability applied in encoder blocks.
+    norm: normalization type used in encoder blocks ("batch", "layer", "none").
+"""
+
 import torch
 import torch.nn as nn
-from typing import Iterable, Tuple, Literal
-
+from typing import Tuple, Literal
 
 class Autoencoder(nn.Module):
-    """
-    Deeper MLP Autoencoder with optional normalization and dropout.
-
-    Design choices:
-      - Deeper encoder (256→128→64→latent) improves compression → anomalies reconstruct worse.
-      - Dropout in encoder only (regularize representation; decoder stays deterministic).
-      - LeakyReLU for robust gradients on sparse/wide features.
-      - Optional norm ("batch", "layer", "none"), applied in encoder blocks.
-
-    Args:
-        input_dim: number of input features
-        hidden_dims: encoder hidden layer sizes (decoder mirrors this)
-        latent_dim: bottleneck size
-        dropout: dropout prob applied in encoder blocks
-        norm: normalization type for encoder blocks ("batch" | "layer" | "none")
-    """
     def __init__(
         self,
         input_dim: int,
@@ -29,7 +32,7 @@ class Autoencoder(nn.Module):
         norm: Literal["batch", "layer", "none"] = "batch",
     ):
         super().__init__()
-        assert len(hidden_dims) >= 2, "Use at least two hidden layers for a useful bottleneck."
+        assert len(hidden_dims) >= 2
 
         # --- Encoder -----------------------------------------------------------
         enc_layers: list[nn.Module] = []

@@ -1,5 +1,15 @@
-from __future__ import annotations
+"""
+This file has helper functions designed for managing dataset file paths and CSV operations.
 
+- get_dataset_dir(): Builds (and creates if needed) a directory path for a dataset.
+- project_root(): Returns the root directory of the project based on the current file.
+- data_paths(): Returns paths to the raw and processed data folders.
+- list_csvs(): Lists all CSV files in a folder.
+- read_csv_safely(): Reads a CSV file using 'pyarrow' (fast, if available) or fallback to pandas’ default reader.
+- save_csv(): Saves a DataFrame to a CSV file, creating directories if needed.
+"""
+
+from __future__ import annotations
 import os
 from glob import glob
 import pandas as pd
@@ -23,17 +33,14 @@ def data_paths(root: str) -> tuple[str, str]:
     return raw, processed
 
 def list_csvs(dataset_dir: str) -> list[str]:
-    # Supports .csv and simple compressed csvs
     files = sorted(glob(os.path.join(dataset_dir, "*.csv*")))
-    if not files:
-        raise ValueError(f"No CSV files found in {dataset_dir}")
+    if not files: raise ValueError(f"No CSV files found in {dataset_dir}")
     return files
 
 def read_csv_safely(path: str, low_memory: bool = False) -> pd.DataFrame:
-    # Use pyarrow engine if available for speed; fallback to default
     read_kwargs = {"low_memory": low_memory}
     try:
-        return pd.read_csv(path, engine="pyarrow")  # type: ignore[arg-type]
+        return pd.read_csv(path, engine="pyarrow")
     except Exception:
         return pd.read_csv(path, **read_kwargs)
 

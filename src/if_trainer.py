@@ -1,7 +1,14 @@
 """
-iforest_trainer.py
-Tiny wrapper to train IsolationForest and return anomaly scores (higher=worse).
+This file is an isolation forest trainer.
+
+What it does:
+1) Choose/estimate contamination (attack rate) from y_test if provided (clipped to 1–10%), otherwise default to 5%.
+2) Train IsolationForest on X_train with fixed hyperparameters for reproducibility.
+3) Score X_test using -decision_function (so higher = worse/anomalous).
+4) If y_test is given, print ROC-AUC and AP.
+5) Save the fitted model as <model_dir>/<dataset>/iforest.joblib.
 """
+
 from __future__ import annotations
 import os
 import numpy as np
@@ -19,18 +26,14 @@ def train_and_score_iforest(
     dataset: str,
     contamination: float | None = None,
 ) -> np.ndarray:
-    """
-    Train IF and return -decision_function(X_test) as scores (higher = more anomalous).
-    If contamination is None, estimate from y_test (clipped to [1%, 10%]) else default to 5%.
-    """
-    # Create dataset-specific subfolder
+    # Create (or reuse) a dataset-specific output directory
     out_dir = get_dataset_dir(model_dir, dataset)
 
     # Contamination heuristic
     if contamination is None:
         contamination = 0.05 if y_test is None else float(np.clip(np.mean(y_test), 0.01, 0.10))
 
-    # Train Isolation Forest
+    # Train Isolation Forest, this is based on some optimal features
     iforest = IsolationForest(
         n_estimators=413,
         contamination=contamination,

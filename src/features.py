@@ -1,20 +1,26 @@
 """
-feature preparation — CIC-IDS2017 → (X, y)
-Select a compact, stable numeric slice; coerce to numeric & finite; BENIGN→0, attack→1.
+This file is a dataset preparation pipeline for a dataset.
+
+- load_processed(): Loads a cleaned, preprocessed version of the dataset.
+    Uses a cached CSV if available; otherwise, builds it from raw data using ingest and cleaning utilities.
+
+- prepare_features(): Converts the dataset into model-ready features (X) and binary labels (y).
+    handles missing columns, numeric conversion, and label binarization ('BENIGN' → 0, others → 1).
 """
+
 from __future__ import annotations
 import os
 from typing import Tuple
 import pandas as pd
-
 from ingest import RAW_DATA_PATH, PROCESSED_DATA_PATH, load_data, clean_data, save_preprocessed
 from utils.prep import select_existing, to_numeric_finite, binarize_benign_label
 
 __all__ = ["load_processed", "prepare_features"]
 
+# TODO: try with other datasets
 DATASET_NAME = "CIC-IDS2017"
 
-# Compact, discriminative slice; safe with CIC-IDS2017 normalized column names
+# TODO: optomise feat cols
 FEAT_COLS = [
     "Flow_Duration",
     "Total_Fwd_Packets",
@@ -40,7 +46,6 @@ def load_processed(
     processed_path: str = PROCESSED_DATA_PATH,
     raw_path: str = RAW_DATA_PATH,
 ) -> pd.DataFrame:
-    """Return cleaned CIC-IDS2017; use cache if present, else build from raw."""
     cache = os.path.join(processed_path, f"{DATASET_NAME}_clean.csv")
     if prefer_cache and os.path.exists(cache):
         print(f"📦 Using cached processed dataset → {cache}")
@@ -51,15 +56,9 @@ def load_processed(
     return pd.read_csv(path, low_memory=False)
 
 def prepare_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
-    """Produce model-ready (X, y) for CIC-IDS2017."""
-    # y first (explicit failure if missing)
     y = binarize_benign_label(df)
-
-    # feature subset (warn if some missing, but proceed with what we have)
     X, missing = select_existing(df, FEAT_COLS)
     if missing:
         print(f"⚠️ Missing expected features (continuing without them): {missing}")
-
-    # numeric + finite
     X = to_numeric_finite(X)
     return X, y

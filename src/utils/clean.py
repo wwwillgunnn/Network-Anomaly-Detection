@@ -1,8 +1,14 @@
+"""
+This file has helper functions designed for cleaning and standardising a dataset.
+
+- normalize_columns(): Renames columns to a consistent format (e.g. 'Flow Duration' → 'Flow_Duration', 'Total-Packets' → 'Total_Packets').
+- basic_clean(): Performs basic cleaning by removing junk/unnamed columns, handling missing or infinite values (change to 0) and removing duplicates.
+"""
+
 from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-# Format columns to have 1 unified style, e.g. Flow Duration -> Flow_Duration or Total-Packets -> Total_Packets
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = (
@@ -12,7 +18,6 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     )
     return df
 
-# drop "Unnamed" junk + all-NaN columns, dedupe, fill, make finite (change to 0)
 def basic_clean(df: pd.DataFrame) -> pd.DataFrame:
     df = df.loc[:, ~df.columns.str.match(r"^Unnamed", case=False)]
     df = df.dropna(axis=1, how="all")
