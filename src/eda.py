@@ -30,6 +30,28 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+def _read_csvs_from(path: Path, limit: Optional[int] = None) -> pd.DataFrame:
+    files = []
+    if path.is_dir():
+        files = sorted(path.glob("*.csv"))
+    elif path.is_file() and path.suffix.lower() == ".csv":
+        files = [path]
+    if not files:
+        raise FileNotFoundError(f"No CSVs found at {path}")
+
+    frames: List[pd.DataFrame] = []
+    total = 0
+    for p in files:
+        print(f"📥 Reading: {p}")
+        frames.append(pd.read_csv(p, low_memory=False))
+        total += len(frames[-1])
+        if limit is not None and total >= limit:
+            break
+    df = pd.concat(frames, ignore_index=True)
+    if limit is not None and len(df) > limit:
+        df = df.head(limit).copy()
+    return df
+
 # ----------------------------
 # Matplotlib defaults
 # ----------------------------
@@ -151,13 +173,25 @@ def plot_numeric_histograms(df: pd.DataFrame, outdir: Path, max_cols: int = 24, 
     n_rows = int(np.ceil(n / n_cols))
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols + 2, 3 * n_rows + 2))
     axes = np.array(axes).reshape(n_rows, n_cols)
+
     for i, col in enumerate(cols):
         r, c = divmod(i, n_cols)
         ax = axes[r, c]
-        series = pd.to_numeric(df[col], errors="coerce").dropna()
-        ax.hist(series, bins=bins)
+        series = pd.to_numeric(df[col], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+        if series.empty:
+            ax.set_title(f"{col} (no finite values)")
+            ax.axis("off")
+            continue
+        # Optional winsorize to avoid extreme outliers wrecking bins
+        try:
+            lo, hi = np.nanpercentile(series, [0.5, 99.5])
+            if np.isfinite(lo) and np.isfinite(hi) and lo < hi:
+                series = series.clip(lo, hi)
+        except Exception:
+            pass
+        ax.hist(series.values, bins=bins)
         ax.set_title(col)
-    # Hide leftover axes
+
     for j in range(n, n_rows * n_cols):
         r, c = divmod(j, n_cols)
         axes[r, c].axis("off")
@@ -168,20 +202,21 @@ def plot_numeric_histograms(df: pd.DataFrame, outdir: Path, max_cols: int = 24, 
 
 
 def plot_correlations(df: pd.DataFrame, outdir: Path, method: str = "pearson", top_k: int = 30) -> None:
-    num = df.select_dtypes(include=[np.number])
+    num = df.select_dtypes(include=[np.number]).replace([np.inf, -np.inf], np.nan)
+    num = num.dropna(axis=1, how="all")
     if num.shape[1] < 2:
         print("ℹ️  Not enough numeric columns for correlations.")
         return
-    # Use top_k numeric columns by variance to avoid gigantic mats
-    var = num.var().sort_values(ascending=False)
+    var = num.var(skipna=True).replace([np.inf, -np.inf], np.nan).dropna().sort_values(ascending=False)
+    if var.empty:
+        print("ℹ️  No finite-variance columns for correlations.")
+        return
     cols = var.index[:top_k]
-    corr = num[cols].corr(method=method)
+    corr = num[cols].corr(method=method, min_periods=1)
     fig, ax = plt.subplots(figsize=(1 + 0.3 * len(cols), 1 + 0.3 * len(cols)))
     cax = ax.imshow(corr.values, aspect="auto")
-    ax.set_xticks(range(len(cols)))
-    ax.set_yticks(range(len(cols)))
-    ax.set_xticklabels(cols, rotation=90)
-    ax.set_yticklabels(cols)
+    ax.set_xticks(range(len(cols))); ax.set_yticks(range(len(cols)))
+    ax.set_xticklabels(cols, rotation=90); ax.set_yticklabels(cols)
     ax.set_title(f"Correlation Heatmap ({method}, top {len(cols)})")
     fig.colorbar(cax, ax=ax, fraction=0.046, pad=0.04)
     fig.tight_layout()
@@ -250,10 +285,12 @@ def plot_time_series(df: pd.DataFrame, outdir: Path, freq: str = "1min") -> None
 # Main
 # ----------------------------
 
-def main(dataset: str, outdir: Path, limit: Optional[int]) -> None:
+def run_eda(df: pd.DataFrame, outdir: Path) -> None:
     _safe_mkdir(outdir)
-    print(f"📦 Loading cleaned dataset: {dataset} (limit={limit}) …")
-    df = load_clean_dataset(dataset, limit=limit)
+
+    # Make all numeric columns finite for EDA
+    df = df.copy()
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
 
     # Overview
     n_rows, n_cols = df.shape
@@ -280,20 +317,255 @@ def main(dataset: str, outdir: Path, limit: Optional[int]) -> None:
 
     print("\n🎉 EDA complete.")
 
+    def load_for_stage(
+            dataset: str,
+            stage: str = "processed",  # 'raw' | 'processed'
+            limit: Optional[int] = None,
+            prefer_cache: bool = True,
+    ) -> pd.DataFrame:
+        """
+        - If `dataset` is a PATH:
+            raw: read CSVs from that folder/file
+            processed: read then clean in-memory (no cache file written)
+        - If `dataset` is a NAME:
+            raw: use ingest.load_data(NAME, base_path=RAW_DATA_PATH)
+            processed: use cached PROCESSED file if present (unless --no-cache);
+                       otherwise build from raw via ingest.clean_data and save_preprocessed
+        """
+        # Import here to avoid hard dependency if user runs EDA outside project
+        try:
+            from ingest import RAW_DATA_PATH, PROCESSED_DATA_PATH, load_data, clean_data, \
+                save_preprocessed  # type: ignore
+        except Exception as e:
+            raise RuntimeError(f"Could not import ingest helpers: {e}")
+
+        ds_path = Path(dataset)
+
+        if ds_path.exists():  # PATH MODE
+            if stage == "raw":
+                return _read_csvs_from(ds_path, limit=limit)
+            else:
+                raw_df = _read_csvs_from(ds_path, limit=limit)
+                return clean_data(raw_df)
+
+        # NAME MODE
+        name = dataset
+        if stage == "raw":
+            df = load_data(name, base_path=RAW_DATA_PATH)
+            if limit is not None and len(df) > limit:
+                df = df.head(limit).copy()
+            return df
+
+        # processed
+        cache = os.path.join(PROCESSED_DATA_PATH, f"{name}_clean.csv")
+        if prefer_cache and os.path.exists(cache):
+            print(f"📦 Using cached processed dataset → {cache}")
+            df = pd.read_csv(cache, low_memory=False)
+        else:
+            print("🧹 Building processed dataset from raw CSVs...")
+            df = clean_data(load_data(name, base_path=RAW_DATA_PATH))
+            # Save a cache for future runs
+            try:
+                save_preprocessed(df, name, base_path=PROCESSED_DATA_PATH)
+            except Exception as e:
+                print(f"⚠️ Could not save processed cache: {e}")
+        if limit is not None and len(df) > limit:
+            df = df.head(limit).copy()
+        return df
+
+def _read_csvs_from(path: Path, limit: Optional[int] = None) -> pd.DataFrame:
+    files: List[Path] = []
+    if path.is_dir():
+        files = sorted(path.glob("*.csv"))
+    elif path.is_file() and path.suffix.lower() == ".csv":
+        files = [path]
+    if not files:
+        raise FileNotFoundError(f"No CSVs found at {path}")
+
+    frames: List[pd.DataFrame] = []
+    total = 0
+    for p in files:
+        print(f"📥 Reading: {p}")
+        frames.append(pd.read_csv(p, low_memory=False))
+        total += len(frames[-1])
+        if limit is not None and total >= limit:
+            break
+    df = pd.concat(frames, ignore_index=True)
+    if limit is not None and len(df) > limit:
+        df = df.head(limit).copy()
+    return df
+
+
+def load_for_stage(
+    dataset: str,
+    stage: str = "processed",              # 'raw' | 'processed'
+    limit: Optional[int] = None,
+    prefer_cache: bool = True,
+) -> pd.DataFrame:
+    """
+    Accepts a dataset NAME (e.g., 'CIC-IDS2017') or a PATH to CSVs.
+    - stage='raw'      -> raw rows
+    - stage='processed'-> cleaned/processed rows if available; else raw as fallback
+    """
+    # Try both import styles depending on your repo layout
+    ingest_mod = None
+    try:
+        from src import ingest as ingest_mod  # type: ignore
+    except Exception:
+        try:
+            import ingest as ingest_mod  # type: ignore
+        except Exception:
+            ingest_mod = None
+
+    ds_path = Path(dataset)
+
+    # --- PATH MODE -----------------------------------------------------------
+    if ds_path.exists():
+        raw_df = _read_csvs_from(ds_path, limit=limit)
+        if stage == "raw":
+            return raw_df
+        # If we have a cleaner in ingest, use it; otherwise just treat as processed
+        if ingest_mod is not None and hasattr(ingest_mod, "clean_data"):
+            try:
+                return ingest_mod.clean_data(raw_df)  # type: ignore[attr-defined]
+            except Exception as e:
+                print(f"⚠️  clean_data failed; using raw as-is for processed EDA ({e})")
+        return raw_df
+
+    # --- NAME MODE -----------------------------------------------------------
+    name = dataset
+
+    # 1) RAW
+    if stage == "raw":
+        # Preferred: ingest helper(s)
+        if ingest_mod is not None:
+            if hasattr(ingest_mod, "load_dataset"):
+                try:
+                    df = ingest_mod.load_dataset(name)  # type: ignore[attr-defined]
+                    return df if limit is None else df.head(limit).copy()
+                except TypeError:
+                    pass
+            if hasattr(ingest_mod, "load_data"):
+                df = ingest_mod.load_data(name)  # type: ignore[attr-defined]
+                return df if limit is None else df.head(limit).copy()
+        # Fallback: data/raw/<name> or data/samples/<name>
+        for base in ["data/raw", "data/samples", "data"]:
+            p = Path(base) / name
+            if p.exists():
+                return _read_csvs_from(p, limit=limit)
+        raise FileNotFoundError(f"Could not find raw dataset '{name}'")
+
+    # 2) PROCESSED
+    # Prefer cached processed CSVs if present
+    if prefer_cache:
+        for p in [
+            Path("data/processed") / name,
+            Path("data/processed") / f"{name}.csv",
+            Path("data/processed") / f"{name}_clean.csv",
+        ]:
+            if p.exists():
+                return _read_csvs_from(p, limit=limit)
+
+    # Build processed via ingest if possible
+    if ingest_mod is not None:
+        if hasattr(ingest_mod, "load_clean"):
+            df = ingest_mod.load_clean(name)  # type: ignore[attr-defined]
+            return df if limit is None else df.head(limit).copy()
+        if hasattr(ingest_mod, "load_dataset"):
+            try:
+                df = ingest_mod.load_dataset(name, cleaned=True)  # type: ignore[attr-defined]
+                return df if limit is None else df.head(limit).copy()
+            except TypeError:
+                pass
+        if hasattr(ingest_mod, "clean_data"):
+            # Build from raw using the cleaner
+            raw_df = load_for_stage(name, stage="raw", limit=limit, prefer_cache=prefer_cache)
+            try:
+                df = ingest_mod.clean_data(raw_df)  # type: ignore[attr-defined]
+                return df if limit is None else df.head(limit).copy()
+            except Exception as e:
+                print(f"⚠️  clean_data failed; using raw as processed fallback ({e})")
+
+    # Last fallback: try processed folder anyway
+    p = Path("data/processed") / name
+    if p.exists():
+        return _read_csvs_from(p, limit=limit)
+
+    raise FileNotFoundError(f"Could not load processed dataset '{name}'")
+
+def _get_str_attr(mod, names):
+    for n in names:
+        if hasattr(mod, n):
+            v = getattr(mod, n)
+            if isinstance(v, str) and v.strip():
+                return v
+    return None
+
+
+def resolve_dataset(arg_ds: Optional[str]) -> str:
+    # 1) CLI wins
+    if arg_ds:
+        return arg_ds
+
+    # 2) Env var
+    env = os.getenv("ICT_DATASET")
+    if env:
+        return env
+
+    # 3) Try defaults exposed by your code
+    for mod_name in ("ingest", "src.ingest", "features", "src.features"):
+        try:
+            mod = __import__(mod_name, fromlist=["*"])
+        except Exception:
+            continue
+        ds = _get_str_attr(mod, ["DATASET_NAME", "DEFAULT_DATASET", "DATASET", "dataset"])
+        if ds:
+            return ds
+
+    # 4) Auto-detect a single dataset folder with CSVs
+    candidates = []
+    for base in ("data/processed", "data/raw", "data/samples", "data"):
+        bp = Path(base)
+        if not bp.exists():
+            continue
+        for d in bp.iterdir():
+            if d.is_dir() and any(d.glob("*.csv")):
+                candidates.append(d.name)
+
+    uniq = sorted(set(candidates))
+    if len(uniq) == 1:
+        return uniq[0]
+
+    msg = "error: Could not determine dataset automatically."
+    if uniq:
+        msg += "\nDetected datasets:\n  - " + "\n  - ".join(uniq)
+    raise SystemExit(msg + "\nPass --dataset, set ICT_DATASET, or expose DATASET_NAME in ingest.py.")
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run EDA on cleaned network dataset")
-    parser.add_argument("--dataset", required=True, help="Dataset name, e.g., CIC-IDS2017 / CIC-IDS2018 / CIC-IDS2019")
-    parser.add_argument("--out", default="eda_reports", help="Output directory for PNGs and CSV")
-    parser.add_argument("--limit", type=int, default=None, help="Optional row cap for quick EDA")
+    parser = argparse.ArgumentParser(description="Run EDA on network dataset (raw or processed)")
+    parser.add_argument("--dataset", required=False, help="Dataset NAME or PATH (optional if ingest exposes DATASET_NAME)")
+    parser.add_argument("--stage", choices=["raw", "processed", "both"], default="both")
+    parser.add_argument("--out", default=None, help="Output dir root (default: eda_reports/<dataset>/<stage>)")
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--no-cache", action="store_true")
     args = parser.parse_args()
 
-    # Ensure repo root is on path for `from src import ingest`
+    # Ensure repo root is on sys.path for 'import ingest'
     repo_root = Path(__file__).resolve().parents[1]
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
-    main(dataset=args.dataset, outdir=Path(args.out), limit=args.limit)
+    dataset = resolve_dataset(args.dataset)        # <-- no arguments needed in PyCharm now
+    ds_label = Path(dataset).name if Path(dataset).exists() else dataset
+    stages = ["raw", "processed"] if args.stage == "both" else [args.stage]
+    prefer_cache = not args.no_cache
+
+    for st in stages:
+        outdir = Path(args.out) if args.out else Path("eda_reports") / ds_label / st
+        print(f"\n=== EDA for {ds_label} [{st}] ===")
+        df = load_for_stage(dataset, stage=st, limit=args.limit, prefer_cache=prefer_cache)
+        run_eda(df, outdir)
 
 
 # old file
