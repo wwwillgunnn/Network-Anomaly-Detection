@@ -29,6 +29,7 @@ from typing import Optional, Tuple, List
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import re
 
 def _read_csvs_from(path: Path, limit: Optional[int] = None) -> pd.DataFrame:
     files = []
@@ -65,18 +66,83 @@ plt.rcParams.update({
 # Utils
 # ----------------------------
 LABEL_CANDIDATES = ["label", "Label", "y", "Attack", "attack", "is_attack", "malicious"]
-TIME_CANDIDATES = ["timestamp", "Timestamp", "flow_start", "time", "Time"]
+TIME_CANDIDATES = [ "timestamp", "time", "datetime","flow_start", "flow start", "flow start time",
+                    "starttime", "start time", "stime", "date first seen", "date","ts"]
 SRC_IP_CAND = ["src_ip", "Src IP", "source", "source_ip"]
 DST_IP_CAND = ["dst_ip", "Dst IP", "destination", "destination_ip"]
 SRC_PORT_CAND = ["src_port", "Src Port", "sport"]
 DST_PORT_CAND = ["dst_port", "Dst Port", "dport"]
 
+def _norm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", s.strip().lower())
+
+def find_time_col(df: pd.DataFrame) -> Optional[str]:
+    # 1) exact-ish match (case/space/underscore insensitive)
+    norm_map = {_norm(c): c for c in df.columns}
+    for cand in TIME_CANDIDATES:
+        key = _norm(cand)
+        if key in norm_map:
+            return norm_map[key]
+
+    # 2) heuristic: any column whose name hints "time"/"date"
+    hint_cols = [c for c in df.columns if re.search(r"(time|date|stamp)", c, re.I)]
+    # try to parse each; pick the one with the most successful parses
+    best_col, best_non_na = None, 0
+    for c in hint_cols:
+        s = pd.to_datetime(df[c], errors="coerce", utc=True)
+        non_na = s.notna().sum()
+        if non_na > best_non_na:
+            best_col, best_non_na = c, non_na
+    if best_col and best_non_na > 0:
+        return best_col
+
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if num_cols:
+        sample_n = min(len(df), 50000)
+        idx = np.random.RandomState(0).choice(len(df), size=sample_n, replace=False) if len(
+            df) > sample_n else np.arange(len(df))
+        best_col, best_frac = None, 0.0
+        start, end = pd.Timestamp("2000-01-01", tz="UTC"), pd.Timestamp("2035-01-01", tz="UTC")
+        for c in num_cols:
+            x = pd.to_numeric(df[c].values[idx], errors="coerce")
+            # seconds
+            dt_s = pd.to_datetime(x, unit="s", errors="coerce", utc=True)
+            ok_s = ((dt_s >= start) & (dt_s <= end)).sum()
+            # milliseconds
+            dt_ms = pd.to_datetime(x, unit="ms", errors="coerce", utc=True)
+            ok_ms = ((dt_ms >= start) & (dt_ms <= end)).sum()
+            total = np.isfinite(x).sum()
+            if total == 0:
+                continue
+            frac = max(ok_s, ok_ms) / total
+            if frac > best_frac:
+                best_col, best_frac = c, frac
+        # choose if convincingly time-like
+        if best_col is not None and best_frac >= 0.6:
+            return best_col
+
+    return None
+
+def parse_time_series(series: pd.Series) -> pd.Series:
+    # numeric epoch detection (s vs ms)
+    if np.issubdtype(series.dtype, np.number):
+        x = pd.to_numeric(series, errors="coerce")
+        # choose unit by magnitude (13 digits -> ms)
+        median = np.nanmedian(x)
+        if np.isfinite(median) and median > 1e11:
+            dt = pd.to_datetime(x, unit="ms", errors="coerce", utc=True)
+        else:
+            dt = pd.to_datetime(x, unit="s", errors="coerce", utc=True)
+        return dt
+    # strings/datetimes
+    return pd.to_datetime(series, errors="coerce", utc=True)
 
 def find_first(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
-    lower_cols = {c.lower(): c for c in df.columns}
+    norm_map = {re.sub(r"[^a-z0-9]+", "", str(c).lower()): c for c in df.columns}
     for cand in candidates:
-        if cand.lower() in lower_cols:
-            return lower_cols[cand.lower()]
+        key = re.sub(r"[^a-z0-9]+", "", cand.lower())
+        if key in norm_map:
+            return norm_map[key]
     return None
 
 
@@ -264,17 +330,19 @@ def plot_top_ips_ports(df: pd.DataFrame, outdir: Path, top_n: int = 20) -> None:
 
 
 def plot_time_series(df: pd.DataFrame, outdir: Path, freq: str = "1min") -> None:
-    tcol = find_first(df, TIME_CANDIDATES)
-    if tcol is None or tcol not in df:
+    tcol = find_time_col(df)
+    if tcol is None:
         print("ℹ️  No timestamp column found; skipping time series plot.")
         return
-    s = pd.to_datetime(df[tcol], errors="coerce").dropna().sort_values()
+
+    s = parse_time_series(df[tcol]).dropna().sort_values()
     if s.empty:
         print("ℹ️  Timestamp column exists but could not parse to datetime; skipping.")
         return
+
     counts = s.dt.floor(freq).value_counts().sort_index()
     ax = counts.plot()
-    ax.set_title(f"Flows per {freq}")
+    ax.set_title(f"Flows per {freq} (time column: {tcol})")
     ax.set_xlabel("Time")
     ax.set_ylabel("Count")
     _savefig(outdir, "time_series_counts")
@@ -291,6 +359,9 @@ def run_eda(df: pd.DataFrame, outdir: Path) -> None:
     # Make all numeric columns finite for EDA
     df = df.copy()
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
+
+    # Clean column names: trim and collapse whitespace (handles " Label", " Timestamp", etc.)
+    df.rename(columns=lambda c: re.sub(r"\s+", " ", str(c)).strip(), inplace=True)
 
     # Overview
     n_rows, n_cols = df.shape
@@ -317,61 +388,61 @@ def run_eda(df: pd.DataFrame, outdir: Path) -> None:
 
     print("\n🎉 EDA complete.")
 
-    def load_for_stage(
-            dataset: str,
-            stage: str = "processed",  # 'raw' | 'processed'
-            limit: Optional[int] = None,
-            prefer_cache: bool = True,
-    ) -> pd.DataFrame:
-        """
-        - If `dataset` is a PATH:
-            raw: read CSVs from that folder/file
-            processed: read then clean in-memory (no cache file written)
-        - If `dataset` is a NAME:
-            raw: use ingest.load_data(NAME, base_path=RAW_DATA_PATH)
-            processed: use cached PROCESSED file if present (unless --no-cache);
-                       otherwise build from raw via ingest.clean_data and save_preprocessed
-        """
-        # Import here to avoid hard dependency if user runs EDA outside project
-        try:
-            from ingest import RAW_DATA_PATH, PROCESSED_DATA_PATH, load_data, clean_data, \
-                save_preprocessed  # type: ignore
-        except Exception as e:
-            raise RuntimeError(f"Could not import ingest helpers: {e}")
+def load_for_stage(
+        dataset: str,
+        stage: str = "processed",  # 'raw' | 'processed'
+        limit: Optional[int] = None,
+        prefer_cache: bool = True,
+) -> pd.DataFrame:
+    """
+    - If `dataset` is a PATH:
+        raw: read CSVs from that folder/file
+        processed: read then clean in-memory (no cache file written)
+    - If `dataset` is a NAME:
+        raw: use ingest.load_data(NAME, base_path=RAW_DATA_PATH)
+        processed: use cached PROCESSED file if present (unless --no-cache);
+                   otherwise build from raw via ingest.clean_data and save_preprocessed
+    """
+    # Import here to avoid hard dependency if user runs EDA outside project
+    try:
+        from ingest import RAW_DATA_PATH, PROCESSED_DATA_PATH, load_data, clean_data, \
+            save_preprocessed  # type: ignore
+    except Exception as e:
+        raise RuntimeError(f"Could not import ingest helpers: {e}")
 
-        ds_path = Path(dataset)
+    ds_path = Path(dataset)
 
-        if ds_path.exists():  # PATH MODE
-            if stage == "raw":
-                return _read_csvs_from(ds_path, limit=limit)
-            else:
-                raw_df = _read_csvs_from(ds_path, limit=limit)
-                return clean_data(raw_df)
-
-        # NAME MODE
-        name = dataset
+    if ds_path.exists():  # PATH MODE
         if stage == "raw":
-            df = load_data(name, base_path=RAW_DATA_PATH)
-            if limit is not None and len(df) > limit:
-                df = df.head(limit).copy()
-            return df
-
-        # processed
-        cache = os.path.join(PROCESSED_DATA_PATH, f"{name}_clean.csv")
-        if prefer_cache and os.path.exists(cache):
-            print(f"📦 Using cached processed dataset → {cache}")
-            df = pd.read_csv(cache, low_memory=False)
+            return _read_csvs_from(ds_path, limit=limit)
         else:
-            print("🧹 Building processed dataset from raw CSVs...")
-            df = clean_data(load_data(name, base_path=RAW_DATA_PATH))
-            # Save a cache for future runs
-            try:
-                save_preprocessed(df, name, base_path=PROCESSED_DATA_PATH)
-            except Exception as e:
-                print(f"⚠️ Could not save processed cache: {e}")
+            raw_df = _read_csvs_from(ds_path, limit=limit)
+            return clean_data(raw_df)
+
+    # NAME MODE
+    name = dataset
+    if stage == "raw":
+        df = load_data(name, base_path=RAW_DATA_PATH)
         if limit is not None and len(df) > limit:
             df = df.head(limit).copy()
         return df
+
+    # processed
+    cache = os.path.join(PROCESSED_DATA_PATH, f"{name}_clean.csv")
+    if prefer_cache and os.path.exists(cache):
+        print(f"📦 Using cached processed dataset → {cache}")
+        df = pd.read_csv(cache, low_memory=False)
+    else:
+        print("🧹 Building processed dataset from raw CSVs...")
+        df = clean_data(load_data(name, base_path=RAW_DATA_PATH))
+        # Save a cache for future runs
+        try:
+            save_preprocessed(df, name, base_path=PROCESSED_DATA_PATH)
+        except Exception as e:
+            print(f"⚠️ Could not save processed cache: {e}")
+    if limit is not None and len(df) > limit:
+        df = df.head(limit).copy()
+    return df
 
 def _read_csvs_from(path: Path, limit: Optional[int] = None) -> pd.DataFrame:
     files: List[Path] = []
