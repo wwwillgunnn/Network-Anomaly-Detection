@@ -66,76 +66,11 @@ plt.rcParams.update({
 # Utils
 # ----------------------------
 LABEL_CANDIDATES = ["label", "Label", "y", "Attack", "attack", "is_attack", "malicious"]
-TIME_CANDIDATES = [ "timestamp", "time", "datetime","flow_start", "flow start", "flow start time",
-                    "starttime", "start time", "stime", "date first seen", "date","ts"]
 SRC_IP_CAND = ["src_ip", "Src IP", "source", "source_ip"]
 DST_IP_CAND = ["dst_ip", "Dst IP", "destination", "destination_ip"]
 SRC_PORT_CAND = ["src_port", "Src Port", "sport"]
 DST_PORT_CAND = ["dst_port", "Dst Port", "dport"]
 
-def _norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", s.strip().lower())
-
-def find_time_col(df: pd.DataFrame) -> Optional[str]:
-    # 1) exact-ish match (case/space/underscore insensitive)
-    norm_map = {_norm(c): c for c in df.columns}
-    for cand in TIME_CANDIDATES:
-        key = _norm(cand)
-        if key in norm_map:
-            return norm_map[key]
-
-    # 2) heuristic: any column whose name hints "time"/"date"
-    hint_cols = [c for c in df.columns if re.search(r"(time|date|stamp)", c, re.I)]
-    # try to parse each; pick the one with the most successful parses
-    best_col, best_non_na = None, 0
-    for c in hint_cols:
-        s = pd.to_datetime(df[c], errors="coerce", utc=True)
-        non_na = s.notna().sum()
-        if non_na > best_non_na:
-            best_col, best_non_na = c, non_na
-    if best_col and best_non_na > 0:
-        return best_col
-
-    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    if num_cols:
-        sample_n = min(len(df), 50000)
-        idx = np.random.RandomState(0).choice(len(df), size=sample_n, replace=False) if len(
-            df) > sample_n else np.arange(len(df))
-        best_col, best_frac = None, 0.0
-        start, end = pd.Timestamp("2000-01-01", tz="UTC"), pd.Timestamp("2035-01-01", tz="UTC")
-        for c in num_cols:
-            x = pd.to_numeric(df[c].values[idx], errors="coerce")
-            # seconds
-            dt_s = pd.to_datetime(x, unit="s", errors="coerce", utc=True)
-            ok_s = ((dt_s >= start) & (dt_s <= end)).sum()
-            # milliseconds
-            dt_ms = pd.to_datetime(x, unit="ms", errors="coerce", utc=True)
-            ok_ms = ((dt_ms >= start) & (dt_ms <= end)).sum()
-            total = np.isfinite(x).sum()
-            if total == 0:
-                continue
-            frac = max(ok_s, ok_ms) / total
-            if frac > best_frac:
-                best_col, best_frac = c, frac
-        # choose if convincingly time-like
-        if best_col is not None and best_frac >= 0.6:
-            return best_col
-
-    return None
-
-def parse_time_series(series: pd.Series) -> pd.Series:
-    # numeric epoch detection (s vs ms)
-    if np.issubdtype(series.dtype, np.number):
-        x = pd.to_numeric(series, errors="coerce")
-        # choose unit by magnitude (13 digits -> ms)
-        median = np.nanmedian(x)
-        if np.isfinite(median) and median > 1e11:
-            dt = pd.to_datetime(x, unit="ms", errors="coerce", utc=True)
-        else:
-            dt = pd.to_datetime(x, unit="s", errors="coerce", utc=True)
-        return dt
-    # strings/datetimes
-    return pd.to_datetime(series, errors="coerce", utc=True)
 
 def find_first(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
     norm_map = {re.sub(r"[^a-z0-9]+", "", str(c).lower()): c for c in df.columns}
@@ -328,27 +263,6 @@ def plot_top_ips_ports(df: pd.DataFrame, outdir: Path, top_n: int = 20) -> None:
         _savefig(outdir, "top_dst_ports")
         plt.close()
 
-
-def plot_time_series(df: pd.DataFrame, outdir: Path, freq: str = "1min") -> None:
-    tcol = find_time_col(df)
-    if tcol is None:
-        print("ℹ️  No timestamp column found; skipping time series plot.")
-        return
-
-    s = parse_time_series(df[tcol]).dropna().sort_values()
-    if s.empty:
-        print("ℹ️  Timestamp column exists but could not parse to datetime; skipping.")
-        return
-
-    counts = s.dt.floor(freq).value_counts().sort_index()
-    ax = counts.plot()
-    ax.set_title(f"Flows per {freq} (time column: {tcol})")
-    ax.set_xlabel("Time")
-    ax.set_ylabel("Count")
-    _savefig(outdir, "time_series_counts")
-    plt.close()
-
-
 # ----------------------------
 # Main
 # ----------------------------
@@ -384,7 +298,6 @@ def run_eda(df: pd.DataFrame, outdir: Path) -> None:
     plot_correlations(df, outdir, method="pearson")
     plot_correlations(df, outdir, method="spearman")
     plot_top_ips_ports(df, outdir)
-    plot_time_series(df, outdir)
 
     print("\n🎉 EDA complete.")
 
