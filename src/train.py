@@ -80,6 +80,7 @@ def main():
     lstm_metrics = full_evaluation(y_test, lstm_scores, dataset, "lstm", MODEL_DIR)
 
     # Todo: Combine and save metrics summary to CSV for comparison
+    # TODO: Get other methods like xgboost, lightgbm, catboost, fastai, tensorflow
 
 
 if __name__ == "__main__":

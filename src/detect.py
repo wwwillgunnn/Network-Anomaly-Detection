@@ -143,7 +143,7 @@ def load_ae_detector(model_dir: str, dataset: str) -> AEDetector:
     """
     return AEDetector(model_dir=model_dir, dataset=dataset)
 
-
+# todo: has the capability to work realtime
 # ------------------------------ quick test --------------------------------- #
 if __name__ == "__main__":
     # Example manual run (adjust paths/dataset)
