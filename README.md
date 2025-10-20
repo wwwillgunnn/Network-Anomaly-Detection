@@ -2,14 +2,14 @@
 This project detects anomalous patterns in network traffic using machine learning techniques, with the goal of identifying potential threats such as intrusions and unusual flows in real-time.
 
 ## 🚀 Features
-- 📥 Ingests network flow data (e.g., from Zeek, pcap, NetFlow)
-- 🧮 Extracts statistical features from flows or sessions
-- 🤖 Applies machine learning models (e.g., Isolation Forest, Autoencoder) to detect anomalies
-- 🔔 Flags high-risk traffic for alerting or review or even block network traffic
-- 📊 (Optional) Web dashboard for real-time anomaly monitoring and feedback
+- 📥 Ingests network flow data
+- 🧮 Extracts statistical features from data
+- 🤖 Applies machine learning models (e.g., Isolation Forest, Autoencoder, LSTM) to detect anomalies
+- 🔔 Flags high-risk traffic for alerting or review
+- 📊 Web dashboard for real-time anomaly monitoring and feedback
 
 ## 📈 How It Works
-- Capture or load network traffic data (from dataset).
+- Load network traffic data from dataset.
 - Preprocess and extract features like bytes, packets, durations, etc.
 - Normalize data to ensure consistent scale.
 - Run anomaly detection models (e.g., Isolation Forest, Autoencoder) on feature data.
@@ -17,25 +17,31 @@ This project detects anomalous patterns in network traffic using machine learnin
 - (Optional) Display results in a web dashboard or write to logs for review.
 
 ## 📂 Project Structure
-├── data/               # Raw and preprocessed flow data
+    ├── data/               # Raw and preprocessed flow data 
+   
+        ├── processed/      # processed datasets from ingest.py
+        
+        ├── samples/        # raw csv files from kaggle
 
-├── models/             # Trained ML models
+    ├── models/             # Trained ML models
 
-├── src/
+    ├── src/
 
-│   ├── ingest.py       # Network data parsing & loading
+        ├── utils/         # Folder full of helper functions
 
-│   ├── features.py     # Feature extraction
+        ├── ingest.py       # Network data parsing & loading
 
-│   ├── detect.py       # Anomaly detection logic
+        ├── features.py     # Feature extraction
 
-│   └── train.py        # Model training script
+        ├── detect.py       # Anomaly detection logic
 
-├── dashboard/          # Frontend code (optional)
+        └── train.py        # Model training script
 
-├── README.md
+    ├── dashboard/          # Frontend code
 
-└── requirements.txt
+    ├── README.md
+
+    └── requirements.txt
 
 ## 📊 Sample Output
 Timestamp	Src IP	Dst IP	Protocol	Score	Anomaly
@@ -51,8 +57,27 @@ Timestamp	Src IP	Dst IP	Protocol	Score	Anomaly
 - UNSW-NB15: https://research.unsw.edu.au/projects/unsw-nb15-dataset
 
 ## Set up
-clone this repo
+### 1) Clone the repo and install dependencies
+```bash
+git clone <YOUR_REPO_URL>
+cd Network-Anomaly-Detection
+pip install -r requirements.txt
+```
 
-download a dataset of your choice
+### 2) Download a dataset of your choice
+download and drop the dataset of your choice under data/samples
 
-drop the dataset under the samples folder
+### 3) Generate a clean dataset
+```bash
+python ingest.py
+```
+
+### 4) Train models
+```bash
+python train.py
+```
+### 5) Launch dashboard
+```bash
+cd dashboard
+streamlit run app.py
+```

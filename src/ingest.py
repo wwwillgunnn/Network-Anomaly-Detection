@@ -20,6 +20,9 @@ DatasetName = Literal["CIC-IDS2017", "CIC-IDS2018", "CIC-IDS2019"]
 
 PROJECT_ROOT = project_root(__file__)
 RAW_DATA_PATH, PROCESSED_DATA_PATH = data_paths(PROJECT_ROOT)
+starting_dataset = os.path.join(RAW_DATA_PATH, "CIC-IDS2017")
+os.makedirs(starting_dataset, exist_ok=True)
+
 
 def load_data(dataset: DatasetName, base_path: str = RAW_DATA_PATH) -> pd.DataFrame:
     dataset_path = os.path.join(base_path, dataset)
@@ -34,8 +37,10 @@ def load_data(dataset: DatasetName, base_path: str = RAW_DATA_PATH) -> pd.DataFr
     print(f"✅ Loaded {len(combined):,} rows from {dataset} ({len(frames)} files)")
     return combined
 
+
 def clean_data(df: pd.DataFrame) -> pd.DataFrame:
     return basic_clean(df)
+
 
 def save_preprocessed(df: pd.DataFrame, dataset: DatasetName, base_path: str = PROCESSED_DATA_PATH) -> str:
     out_path = os.path.join(base_path, f"{dataset}_clean.csv")

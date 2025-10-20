@@ -1,4 +1,3 @@
-- EDA + PDA (metrics file)
 - introduction of more datasets
 - model optimisation
-- dashboard
+- stop network traffic
