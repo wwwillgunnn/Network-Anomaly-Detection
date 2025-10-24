@@ -1,4 +1,9 @@
 from pathlib import Path
+import sys
+REPO_ROOT = Path(__file__).resolve().parent.parent  # <repo>/
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from src.detect import load_ae_detector, IFDetector  # package import
 import json
 import numpy as np
 import pandas as pd
@@ -16,7 +21,6 @@ from sklearn.metrics import (
 )
 
 # ---------- CONFIG ----------
-REPO_ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = (REPO_ROOT / "models").resolve()
 DATA_PROCESSED = (REPO_ROOT / "data" / "processed").resolve()
 SHARED_ARRAYS_DIR = MODELS_DIR / "demo"  # silent fallback for arrays only
@@ -30,7 +34,7 @@ TEST_LABELS = "test_labels.npy"
 SUMMARY_JSON = "summary.json"
 TIMESTAMPS = "timestamps.npy"
 
-# Model artifacts (expected under models/<dataset>/)
+# Model artifacts (under models/<dataset>/)
 IFOREST_JOBLIB = "iforest.joblib"
 SCALER_JOBLIB = "scaler.joblib"
 AE_PTH = "autoencoder.pth"
@@ -54,6 +58,16 @@ def list_available_datasets(models_dir: Path):
         return []
     return sorted([p.name for p in models_dir.iterdir() if p.is_dir()])
 
+def ecdf_normalize(score: float, ref_scores: np.ndarray) -> float:
+    """
+    Map a raw anomaly score to [0,1] using the empirical CDF of reference scores.
+    Returns the percentile (higher = more anomalous).
+    """
+    if ref_scores.size == 0:
+        return float("nan")
+    # Percentile of where `score` sits vs ref distribution
+    pct = (ref_scores <= score).mean()
+    return float(np.clip(pct, 0.0, 1.0))
 
 def dpath(dataset: str, *parts: str) -> Path:
     return MODELS_DIR / dataset / Path(*parts)
@@ -188,7 +202,6 @@ def normalize_timestamps(ts: np.ndarray | None, n_expected: int | None):
 
 def compute_metrics_safe(y_true: np.ndarray, scores: np.ndarray, thr: float):
     # metric computation that handles single-class labels.
-
     y_true = np.asarray(y_true).ravel().astype(int)
     scores = np.asarray(scores).ravel().astype(float)
     y_pred = (scores >= thr).astype(int)
@@ -265,7 +278,88 @@ def find_artifact_with_fallback(dataset: str, fname: str) -> Path | None:
 st.set_page_config(page_title="NAD Dashboard (Streamlit)", layout="wide")
 st.title("🛰️ Network Anomaly Detection — Dashboard")
 
-# Dataset list
+
+def render_manual_packet_scoring(dataset: str, model_choice: str, thr: float, scores, labels):
+    st.markdown("### 🔎 Manual Packet Scoring")
+    if model_choice not in ("Autoencoder", "IsolationForest"):
+        st.info("Manual scoring currently implemented for Autoencoder and IsolationForest.")
+        return
+
+    try:
+        if model_choice == "Autoencoder":
+            det = load_ae_detector(str(MODELS_DIR), dataset)
+            # Feature names from scaler if available; else fallback
+            feature_names = list(getattr(det.scaler, "feature_names_in_", []))
+            input_dim = det.input_dim
+            if not feature_names or len(feature_names) != input_dim:
+                feature_names = [f"f{i}" for i in range(input_dim)]
+        else:
+            # Keep IF feature order aligned to AE’s scaler if possible
+            try:
+                det_ae_for_schema = load_ae_detector(str(MODELS_DIR), dataset)
+                feature_names = list(getattr(det_ae_for_schema.scaler, "feature_names_in_", []))
+                if not feature_names:
+                    feature_names = [f"f{i}" for i in range(det_ae_for_schema.input_dim)]
+            except Exception:
+                feature_names = []
+            det = IFDetector(str(MODELS_DIR), dataset)
+
+        with st.form("manual_packet_form"):
+            st.caption("Enter raw feature values in the exact order your model expects.")
+            cols = st.columns(4)
+            values = {}
+            for i, name in enumerate(feature_names):
+                with cols[i % 4]:
+                    values[name] = st.number_input(name, value=0.0, step=0.1, format="%.6f")
+            submitted = st.form_submit_button("Score packet")
+
+        if not submitted:
+            return
+
+        # Create a one-row DataFrame with the right column order
+        x_df = pd.DataFrame([values])[feature_names]
+
+        # Score
+        if model_choice == "Autoencoder":
+            s_arr, _ = det.predict(x_df)   # AE returns (scores, labels) but we ignore labels here
+            score = float(np.asarray(s_arr).ravel()[0])
+        else:
+            s_arr = det.score(x_df)        # IF returns scores directly (higher = more anomalous)
+            score = float(np.asarray(s_arr).ravel()[0])
+
+        pred = int(score >= float(thr))
+
+        # Confidence (empirical if possible, else margin heuristic)
+        if isinstance(scores, np.ndarray) and scores.size > 0:
+            pool = scores[(labels == 0)] if (isinstance(labels, np.ndarray) and (labels == 0).any()) else scores
+            pool = pool.astype(float)
+            pool_sorted = np.sort(pool.astype(float))
+            rank = int(np.searchsorted(pool_sorted, score, side="right"))
+            pct = rank / max(1, len(pool_sorted))  # P(benign_score ≤ score)
+            p_anom = float(np.clip(pct, 0.0, 1.0))  # higher score → higher anomaly probability
+            p_norm = 1.0 - p_anom
+            confidence = p_anom if pred == 1 else p_norm
+        else:
+            fake_std = float(np.std(scores)) if isinstance(scores, np.ndarray) and scores.size > 1 else 1e-3
+            z = (score - float(thr)) / (fake_std + 1e-9)
+            p_anom = 1.0 / (1.0 + np.exp(-z))
+            confidence = p_anom if pred == 1 else (1.0 - p_anom)
+
+        # Output
+        out_l, out_r, out_r2 = st.columns(3)
+        out_l.metric("Prediction", "🚨 Anomaly" if pred == 1 else "✅ Normal")
+        out_r.metric("Score", f"{score:.4e}")
+        out_r2.metric("Confidence", f"{confidence * 100:.1f}%")
+
+        st.caption(
+            "Confidence is estimated from the empirical distribution of evaluation scores "
+            "(normal-class ECDF if available). It is **not** a calibrated probability."
+        )
+    except Exception as e:
+        st.error(f"Manual scoring failed: {e}")
+
+# Dataset picker & model choice
+c1, c2, c3 = st.columns([2, 2, 2])
 datasets = list_available_datasets(MODELS_DIR)
 if not datasets:
     st.error(
@@ -279,54 +373,53 @@ if not datasets:
     )
     st.stop()
 
-c1, c2, c3 = st.columns([2, 2, 2])
 dataset = c1.selectbox("Dataset", datasets, index=0)
 model_choice = c2.selectbox("Model", ["Autoencoder", "IsolationForest", "LSTM"], index=0)
 
 # Threshold default (AE uses saved threshold if present)
 pref_thr = 0.033
 if model_choice == "Autoencoder":
-    arr_thr = load_optional_np(find_artifact_with_fallback(dataset, AE_THR))
+    arr_thr = load_optional_np((MODELS_DIR / dataset / AE_THR))
     if isinstance(arr_thr, np.ndarray) and arr_thr.size > 0:
         pref_thr = float(arr_thr.ravel()[0])
 
 SLIDER_MIN, SLIDER_MAX = 0.0, 0.2
 thr = c3.slider("Decision threshold", SLIDER_MIN, SLIDER_MAX, float(pref_thr), 0.001)
 
-# open funny
-TARGET_URL = "https://casinocanberra.com.au/"  # lmao
-EPS = 1e-9
-if "opened_max_link" not in st.session_state:
-    st.session_state.opened_max_link = False
-if thr >= SLIDER_MAX - EPS:
-    st.link_button("Open related page", TARGET_URL)
-    if not st.session_state.opened_max_link:
-        components.html(f"""<script>window.open("{TARGET_URL}", "_blank");</script>""", height=0, width=0)
-        st.session_state.opened_max_link = True
-else:
-    if st.session_state.opened_max_link:
-        st.session_state.opened_max_link = False
 
-# Load arrays (dataset -> silent fallback to models/demo)
+# Load arrays early (used by manual scoring confidence and later sections)
 scores_raw, labels_raw, timestamps_raw, source_kind, source_dir = \
     load_arrays_with_silent_fallback(dataset, model_choice)
 scores, labels, align_note = validate_and_align_arrays(scores_raw, labels_raw)
 
+# ---------- MANUAL PACKET SCORING AT TOP ----------
+render_manual_packet_scoring(dataset, model_choice, thr, scores, labels)
+
 # Resolve figure paths (with global fallback) for the selected model
 if model_choice == "Autoencoder":
-    fig_roc = find_png_with_fallback(dataset, AE_ROC)
-    fig_pr = find_png_with_fallback(dataset, AE_PR)
-    fig_cm = find_png_with_fallback(dataset, AE_CM)
+    fig_roc = (MODELS_DIR / dataset / "figs" / AE_ROC)
+    fig_pr = (MODELS_DIR / dataset / "figs" / AE_PR)
+    fig_cm = (MODELS_DIR / dataset / "figs" / AE_CM)
 elif model_choice == "IsolationForest":
-    fig_roc = find_png_with_fallback(dataset, IF_ROC)
-    fig_pr = find_png_with_fallback(dataset, IF_PR)
-    fig_cm = find_png_with_fallback(dataset, IF_CM)
+    fig_roc = (MODELS_DIR / dataset / "figs" / IF_ROC)
+    fig_pr = (MODELS_DIR / dataset / "figs" / IF_PR)
+    fig_cm = (MODELS_DIR / dataset / "figs" / IF_CM)
 else:  # LSTM
-    fig_roc = find_png_with_fallback(dataset, LSTM_ROC)
-    fig_pr = find_png_with_fallback(dataset, LSTM_PR)
-    fig_cm = find_png_with_fallback(dataset, LSTM_CM)
+    fig_roc = (MODELS_DIR / dataset / "figs" / LSTM_ROC)
+    fig_pr = (MODELS_DIR / dataset / "figs" / LSTM_PR)
+    fig_cm = (MODELS_DIR / dataset / "figs" / LSTM_CM)
 
 summary = load_summary_json(dataset)
+
+pref_thr = 0.033
+if model_choice == "Autoencoder":
+    arr_thr = load_optional_np((MODELS_DIR / dataset / AE_THR))
+    if isinstance(arr_thr, np.ndarray) and arr_thr.size > 0:
+        pref_thr = float(arr_thr.ravel()[0])
+else:
+    if summary and "thr_fpr_1pct" in summary:
+        pref_thr = float(summary["thr_fpr_1pct"])
+
 
 # ---------- MODEL HEALTH ----------
 st.markdown("### 📊 Model Health")
@@ -442,7 +535,7 @@ with c_cm_img:
     render_image_if_exists("Confusion Matrix (saved)", fig_cm)
 
 with c_ts:
-    st.subheader("Scores over Time (arrays)")
+    st.subheader("Scores over Time")
     if isinstance(scores, np.ndarray) and scores.size > 0:
         # Parse timestamps; fall back to simple index if missing/mismatched
         ts_series, ts_note = normalize_timestamps(timestamps_raw, n_expected=scores.shape[0])
