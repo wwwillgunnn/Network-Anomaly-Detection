@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="ICT-Network-Anomaly-Detection" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="ICT-Network-Anomaly-Detection" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.11 (Network-Anomaly-Detection)" project-jdk-type="Python SDK" />
 </project>
